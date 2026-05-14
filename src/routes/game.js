@@ -220,6 +220,9 @@ router.post(
   [
     body('x').isInt({ min: 0, max: config.game.gridSize - 1 }).withMessage('X must be between 0-99'),
     body('y').isInt({ min: 0, max: config.game.gridSize - 1 }).withMessage('Y must be between 0-99'),
+    body('lat').optional().isFloat({ min: -90, max: 90 }).withMessage('Invalid latitude'),
+    body('lng').optional().isFloat({ min: -180, max: 180 }).withMessage('Invalid longitude'),
+    body('placementTxHash').optional().isString().isLength({ min: 10, max: 100 }).withMessage('Invalid placement tx hash'),
   ],
   async (req, res) => {
     try {
@@ -229,8 +232,9 @@ router.post(
       }
 
       const db = getFirestore();
-      const { x, y } = req.body;
-      if (!isSeaCoordinate(x, y, config.game.gridSize)) {
+      const { x, y, lat, lng, placementTxHash } = req.body;
+      const hasRealMapPoint = typeof lat === 'number' && typeof lng === 'number';
+      if (!hasRealMapPoint && !isSeaCoordinate(x, y, config.game.gridSize)) {
         return res.status(400).json({ error: 'Boats can only be placed on open sea' });
       }
 
@@ -268,7 +272,10 @@ router.post(
           ...activeBoat,
           mapX: x,
           mapY: y,
+          mapLat: hasRealMapPoint ? lat : null,
+          mapLng: hasRealMapPoint ? lng : null,
           lastMoved: nowIso,
+          lastPlacementTxHash: placementTxHash || null,
         };
 
         const updatedBoats = boats.map((boat) => {
@@ -281,7 +288,8 @@ router.post(
             return {
               ...boat,
               isActive: true,
-              position: { x, y, lastMoved: nowIso },
+              position: { x, y, lat: hasRealMapPoint ? lat : null, lng: hasRealMapPoint ? lng : null, lastMoved: nowIso },
+              lastPlacementTxHash: placementTxHash || null,
               stats,
             };
           }
@@ -295,19 +303,25 @@ router.post(
           boostImage: data.boost?.image || null,
           boatType: activeBoat.boatType || 'DINGHY',
           xp: activeBoat.dailyXp || 0,
+          lat: hasRealMapPoint ? lat : null,
+          lng: hasRealMapPoint ? lng : null,
+          placementTxHash: placementTxHash || null,
           createdAt: nowIso,
         });
 
         tx.update(userRef, {
           activeBoat: updatedActiveBoat,
           boats: updatedBoats,
-          mapPosition: { x, y, lastMoved: nowIso },
+          mapPosition: { x, y, lat: hasRealMapPoint ? lat : null, lng: hasRealMapPoint ? lng : null, lastMoved: nowIso },
           updatedAt: nowIso,
         });
 
         return {
           x,
           y,
+          lat: hasRealMapPoint ? lat : null,
+          lng: hasRealMapPoint ? lng : null,
+          placementTxHash: placementTxHash || null,
           boatType: activeBoat.boatType || 'DINGHY',
           placedAt: nowIso,
         };
@@ -331,6 +345,9 @@ router.post(
   [
     body('x').isInt({ min: 0, max: config.game.gridSize - 1 }).withMessage('X must be between 0-99'),
     body('y').isInt({ min: 0, max: config.game.gridSize - 1 }).withMessage('Y must be between 0-99'),
+    body('lat').optional().isFloat({ min: -90, max: 90 }).withMessage('Invalid latitude'),
+    body('lng').optional().isFloat({ min: -180, max: 180 }).withMessage('Invalid longitude'),
+    body('placementTxHash').optional().isString().isLength({ min: 10, max: 100 }).withMessage('Invalid placement tx hash'),
   ],
   async (req, res) => {
     try {
@@ -340,8 +357,9 @@ router.post(
       }
 
       const db = getFirestore();
-      const { x, y } = req.body;
-      if (!isSeaCoordinate(x, y, config.game.gridSize)) {
+      const { x, y, lat, lng, placementTxHash } = req.body;
+      const hasRealMapPoint = typeof lat === 'number' && typeof lng === 'number';
+      if (!hasRealMapPoint && !isSeaCoordinate(x, y, config.game.gridSize)) {
         return res.status(400).json({ error: 'Boats can only be moved to open sea' });
       }
 
@@ -375,7 +393,10 @@ router.post(
           ...activeBoat,
           mapX: x,
           mapY: y,
+          mapLat: hasRealMapPoint ? lat : null,
+          mapLng: hasRealMapPoint ? lng : null,
           lastMoved: nowIso,
+          lastPlacementTxHash: placementTxHash || null,
         };
 
         const boats = data.boats || [];
@@ -389,7 +410,8 @@ router.post(
             return {
               ...boat,
               isActive: true,
-              position: { x, y, lastMoved: nowIso },
+              position: { x, y, lat: hasRealMapPoint ? lat : null, lng: hasRealMapPoint ? lng : null, lastMoved: nowIso },
+              lastPlacementTxHash: placementTxHash || null,
               stats,
             };
           }
@@ -403,19 +425,23 @@ router.post(
           boostImage: data.boost?.image || null,
           boatType: activeBoat.boatType || 'DINGHY',
           xp: activeBoat.dailyXp || 0,
+          lat: hasRealMapPoint ? lat : null,
+          lng: hasRealMapPoint ? lng : null,
+          placementTxHash: placementTxHash || null,
           createdAt: nowIso,
         });
 
         tx.update(userRef, {
           activeBoat: updatedActiveBoat,
           boats: updatedBoats,
-          mapPosition: { x, y, lastMoved: nowIso },
+          mapPosition: { x, y, lat: hasRealMapPoint ? lat : null, lng: hasRealMapPoint ? lng : null, lastMoved: nowIso },
           updatedAt: nowIso,
         });
 
         return {
           from: { x: activeBoat.mapX, y: activeBoat.mapY },
-          to: { x, y },
+          to: { x, y, lat: hasRealMapPoint ? lat : null, lng: hasRealMapPoint ? lng : null },
+          placementTxHash: placementTxHash || null,
           movedAt: nowIso,
         };
       });
@@ -520,12 +546,15 @@ router.get('/map', async (req, res) => {
         id: doc.id,
         x,
         y,
+        lat: data.lat ?? null,
+        lng: data.lng ?? null,
         boatType: data.boatType,
         owner: data.userId,
         ownerUsername: data.ownerUsername,
         boostLevel: data.boostLevel,
         boostImage: data.boostImage || null,
         xp: data.xp,
+        placementTxHash: data.placementTxHash || null,
         placedAt: data.createdAt,
       };
     });
