@@ -47,6 +47,46 @@ function applyStagnationPenalty(baseXp) {
   return Math.floor(baseXp * multiplier);
 }
 
+const LAND_MASSES = [
+  { cx: 18, cy: 18, rx: 17, ry: 12, rotation: -12 },
+  { cx: 22, cy: 59, rx: 14, ry: 25, rotation: 8 },
+  { cx: 54, cy: 24, rx: 22, ry: 12, rotation: -5 },
+  { cx: 78, cy: 58, rx: 17, ry: 25, rotation: 11 },
+  { cx: 50, cy: 83, rx: 21, ry: 10, rotation: -2 },
+  { cx: 91, cy: 18, rx: 9, ry: 10, rotation: 0 },
+];
+
+function isInsideRotatedEllipse(x, y, land) {
+  const angle = (land.rotation * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const dx = x - land.cx;
+  const dy = y - land.cy;
+  const rotatedX = dx * cos + dy * sin;
+  const rotatedY = -dx * sin + dy * cos;
+
+  return (
+    (rotatedX * rotatedX) / (land.rx * land.rx) +
+      (rotatedY * rotatedY) / (land.ry * land.ry) <=
+    1
+  );
+}
+
+function isSeaCoordinate(x, y, gridSize = 100) {
+  if (!Number.isInteger(x) || !Number.isInteger(y)) {
+    return false;
+  }
+
+  if (x < 0 || x >= gridSize || y < 0 || y >= gridSize) {
+    return false;
+  }
+
+  const normalizedX = (x / (gridSize - 1)) * 100;
+  const normalizedY = (y / (gridSize - 1)) * 100;
+
+  return !LAND_MASSES.some((land) => isInsideRotatedEllipse(normalizedX, normalizedY, land));
+}
+
 module.exports = {
   calculateLevel,
   xpToNextLevel,
@@ -54,4 +94,5 @@ module.exports = {
   getStreakMultiplier,
   hasBoatMovedRecently,
   applyStagnationPenalty,
+  isSeaCoordinate,
 };

@@ -1,5 +1,26 @@
 require('dotenv').config();
 
+function normalizePrivateKey(value) {
+  if (!value) {
+    return value;
+  }
+
+  let normalized = value.trim();
+
+  if (normalized.endsWith(',')) {
+    normalized = normalized.slice(0, -1).trim();
+  }
+
+  if (
+    (normalized.startsWith('"') && normalized.endsWith('"')) ||
+    (normalized.startsWith("'") && normalized.endsWith("'"))
+  ) {
+    normalized = normalized.slice(1, -1);
+  }
+
+  return normalized.replace(/\\n/g, '\n');
+}
+
 const config = {
   // Server
   port: process.env.PORT || 5000,
@@ -27,7 +48,7 @@ const config = {
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID,
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    privateKey: normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY),
   },
 
   // Farcaster

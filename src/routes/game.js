@@ -15,6 +15,7 @@ const {
   getStreakMultiplier,
   hasBoatMovedRecently,
   applyStagnationPenalty,
+  isSeaCoordinate,
 } = require('../utils/gameLogic');
 
 const router = express.Router();
@@ -229,6 +230,10 @@ router.post(
 
       const db = getFirestore();
       const { x, y } = req.body;
+      if (!isSeaCoordinate(x, y, config.game.gridSize)) {
+        return res.status(400).json({ error: 'Boats can only be placed on open sea' });
+      }
+
       const cellId = `${x}_${y}`;
       const cellRef = db.collection('mapPlacements').doc(cellId);
       const userRef = db.collection('users').doc(req.user.id);
@@ -336,6 +341,10 @@ router.post(
 
       const db = getFirestore();
       const { x, y } = req.body;
+      if (!isSeaCoordinate(x, y, config.game.gridSize)) {
+        return res.status(400).json({ error: 'Boats can only be moved to open sea' });
+      }
+
       const newCellId = `${x}_${y}`;
       const newCellRef = db.collection('mapPlacements').doc(newCellId);
       const userRef = db.collection('users').doc(req.user.id);
