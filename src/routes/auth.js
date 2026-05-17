@@ -78,10 +78,15 @@ function buildWalletUsername(walletAddress) {
   return `captain_${walletAddress.slice(2, 8)}`;
 }
 
+function normalizeUsername(username) {
+  return String(username || '').trim().toLowerCase();
+}
+
 function createBaseUserData({ walletAddress, username, farcasterFid = null, profileData = {}, boostInfo, now }) {
   return {
     farcasterFid,
     username,
+    usernameLower: normalizeUsername(username),
     walletAddress,
     totalXp: 0,
     totalFish: 0,
@@ -271,6 +276,7 @@ router.post(
         const authMethods = Array.from(new Set([...(userData.authMethods || []), 'wallet']));
         const updates = {
           walletAddress,
+          usernameLower: userData.usernameLower || normalizeUsername(userData.username),
           boost: boostInfo,
           authMethods,
           lastLoginAt: now,
@@ -385,7 +391,8 @@ router.post(
         const authMethods = Array.from(new Set([...(userData.authMethods || []), 'farcaster']));
         const updates = {
           farcasterFid: resolvedFid,
-          username: resolvedUsername || userData.username,
+          username: userData.customUsername ? userData.username : resolvedUsername || userData.username,
+          usernameLower: normalizeUsername(userData.customUsername ? userData.username : resolvedUsername || userData.username),
           walletAddress: resolvedCustodyAddress,
           profileData: {
             ...userData.profileData,

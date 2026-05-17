@@ -66,6 +66,27 @@ async function getUserDocument(db, userId) {
   return { ref: userRef, data: snapshot.data() };
 }
 
+function normalizeUsername(username) {
+  return String(username || '').trim().toLowerCase();
+}
+
+function isSameUser(snapshot, userId) {
+  return snapshot.exists && snapshot.data()?.userId === userId;
+}
+
+async function syncPlacementOwnerName(db, userId, username) {
+  const snapshot = await db.collection('mapPlacements').where('userId', '==', userId).get();
+  if (snapshot.empty) {
+    return;
+  }
+
+  const batch = db.batch();
+  snapshot.docs.forEach((doc) => {
+    batch.update(doc.ref, { ownerUsername: username });
+  });
+  await batch.commit();
+}
+
 function hasVerifiedActiveBoat(activeBoat) {
   return Boolean(activeBoat && activeBoat.dailyXp && activeBoat.verifiedAt);
 }
@@ -103,6 +124,129 @@ router.get('/profile', async (req, res) => {
     res.status(500).json({ error: 'Failed to get profile' });
   }
 });
+
+router.patch(
+  '/profile',
+  [
+    body('username')
+      .optional()
+      .isString()
+      .trim()
+      .isLength({ min: 3, max: 20 })
+      .withMessage('Username must be 3-20 characters')
+      .matches(/^[a-zA-Z0-9_]+$/)
+      .withMessage('Username can only contain letters, numbers, and underscores'),
+    body('displayName')
+      .optional({ nullable: true })
+      .isString()
+      .trim()
+      .isLength({ max: 32 })
+      .withMessage('Display name must be 32 characters or fewer'),
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ error: 'Validation failed', details: errors.array() });
+      }
+
+      const db = getFirestore();
+      const userRef = db.collection('users').doc(req.user.id);
+      const nextUsername = req.body.username ? String(req.body.username).trim() : null;
+      const nextUsernameLower = nextUsername ? normalizeUsername(nextUsername) : null;
+      const hasDisplayName = Object.prototype.hasOwnProperty.call(req.body, 'displayName');
+      const nextDisplayName = hasDisplayName ? String(req.body.displayName || '').trim() : null;
+      const nowIso = new Date().toISOString();
+
+      const result = await db.runTransaction(async (tx) => {
+        const userSnap = await tx.get(userRef);
+        if (!userSnap.exists) {
+          return { error: 'User not found', status: 404 };
+        }
+
+        const data = userSnap.data();
+        const currentUsernameLower = data.usernameLower || normalizeUsername(data.username);
+        const usernameChanged = Boolean(nextUsernameLower && nextUsernameLower !== currentUsernameLower);
+
+        let newHandleSnap = null;
+        let oldHandleSnap = null;
+        let matchingUserSnap = null;
+        let exactUserSnap = null;
+
+        if (usernameChanged) {
+          const newHandleRef = db.collection('usernameHandles').doc(nextUsernameLower);
+          const oldHandleRef = db.collection('usernameHandles').doc(currentUsernameLower);
+          const matchingUserQuery = db.collection('users').where('usernameLower', '==', nextUsernameLower).limit(1);
+          const exactUserQuery = db.collection('users').where('username', '==', nextUsername).limit(1);
+
+          [newHandleSnap, oldHandleSnap, matchingUserSnap, exactUserSnap] = await Promise.all([
+            tx.get(newHandleRef),
+            tx.get(oldHandleRef),
+            tx.get(matchingUserQuery),
+            tx.get(exactUserQuery),
+          ]);
+
+          const handleTaken = newHandleSnap.exists && !isSameUser(newHandleSnap, req.user.id);
+          const userTaken = !matchingUserSnap.empty && matchingUserSnap.docs[0].id !== req.user.id;
+          const exactTaken = !exactUserSnap.empty && exactUserSnap.docs[0].id !== req.user.id;
+
+          if (handleTaken || userTaken || exactTaken) {
+            return { error: 'Username is already taken', code: 'USERNAME_TAKEN', status: 409 };
+          }
+
+          tx.set(newHandleRef, {
+            userId: req.user.id,
+            username: nextUsername,
+            reservedAt: nowIso,
+            updatedAt: nowIso,
+          });
+
+          if (oldHandleSnap.exists && isSameUser(oldHandleSnap, req.user.id)) {
+            tx.delete(oldHandleRef);
+          }
+        }
+
+        const profileData = {
+          ...(data.profileData || {}),
+          ...(hasDisplayName ? { displayName: nextDisplayName } : {}),
+        };
+
+        const updates = {
+          ...(nextUsername ? { username: nextUsername, usernameLower: normalizeUsername(nextUsername) } : {}),
+          ...(hasDisplayName ? { profileData } : {}),
+          customUsername: nextUsername ? true : data.customUsername || false,
+          updatedAt: nowIso,
+        };
+
+        tx.update(userRef, updates);
+
+        return {
+          profile: buildProfilePayload(userRef.id, {
+            ...data,
+            ...updates,
+          }),
+          usernameChanged,
+        };
+      });
+
+      if (result?.error) {
+        return res.status(result.status || 400).json({
+          error: result.error,
+          code: result.code,
+        });
+      }
+
+      if (result.usernameChanged) {
+        await syncPlacementOwnerName(db, req.user.id, result.profile.username);
+      }
+
+      res.json({ success: true, profile: result.profile });
+    } catch (error) {
+      logger.error('Update profile error:', error);
+      res.status(500).json({ error: 'Failed to update profile' });
+    }
+  }
+);
 
 router.post('/claim-daily', claimLimiter, async (req, res) => {
   try {
