@@ -26,14 +26,15 @@ router.get(
 
       const snapshot = await db
         .collection('users')
-        .where('isActive', '==', true)
         .orderBy('totalXp', 'desc')
-        .offset(offset)
-        .limit(limit)
+        .limit(limit * 2 + offset)
         .get();
 
-      const entries = snapshot.docs.map((doc, index) => {
-        const data = doc.data();
+      const entries = snapshot.docs
+        .map((doc) => doc.data())
+        .filter((data) => data.isActive === true)
+        .slice(offset, offset + limit)
+        .map((data, index) => {
         return {
           rank: offset + index + 1,
           username: data.username,
@@ -51,11 +52,9 @@ router.get(
           const userXp = userDoc.data().totalXp || 0;
           const higherSnapshot = await db
             .collection('users')
-            .where('isActive', '==', true)
             .where('totalXp', '>', userXp)
-            .count()
             .get();
-          userRank = higherSnapshot.data().count + 1;
+          userRank = higherSnapshot.docs.filter(d => d.data().isActive === true).length + 1;
         }
       }
 
@@ -90,14 +89,15 @@ router.get(
 
       const snapshot = await db
         .collection('users')
-        .where('isActive', '==', true)
         .orderBy('currentStreak', 'desc')
-        .orderBy('longestStreak', 'desc')
-        .limit(limit)
+        .limit(limit * 2) // Fetch more in case some are inactive
         .get();
 
-      const entries = snapshot.docs.map((doc, index) => {
-        const data = doc.data();
+      const entries = snapshot.docs
+        .map((doc) => doc.data())
+        .filter((data) => data.isActive === true)
+        .slice(0, limit)
+        .map((data, index) => {
         return {
           rank: index + 1,
           username: data.username,
@@ -137,15 +137,16 @@ router.get(
 
       const snapshot = await db
         .collection('users')
-        .where('isActive', '==', true)
         .where('miniGame.highScore', '>', 0)
         .orderBy('miniGame.highScore', 'desc')
-        .orderBy('miniGame.bestReactionMs')
-        .limit(limit)
+        .limit(limit * 2)
         .get();
 
-      const entries = snapshot.docs.map((doc, index) => {
-        const data = doc.data();
+      const entries = snapshot.docs
+        .map((doc) => doc.data())
+        .filter((data) => data.isActive === true)
+        .slice(0, limit)
+        .map((data, index) => {
         return {
           rank: index + 1,
           username: data.username,
