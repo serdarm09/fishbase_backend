@@ -38,7 +38,7 @@ class RedisService {
       });
 
       this.client.on('connect', () => {
-        logger.info('✅ Connected to Redis');
+        logger.info('Connected to Redis');
         this.isConnected = true;
       });
 
@@ -69,7 +69,7 @@ class RedisService {
       await this.client.disconnect();
       this.client = null;
       this.isConnected = false;
-      logger.info('✅ Disconnected from Redis');
+      logger.info('Disconnected from Redis');
     }
   }
 

@@ -16,7 +16,7 @@ const BOAT_NFT_ABI = [
   "function ownerOf(uint256 tokenId) view returns (address)",
   "function balanceOf(address owner) view returns (uint256)",
   "function boats(uint256 tokenId) view returns (uint8 boatType, uint256 mintedAt, uint256 lastUsed, bool isActive)",
-  "function boatConfigs(uint8 boatType) view returns (string memory name, uint256 dailyXp, uint256 price, uint256 maxSupply, uint256 currentSupply, string memory baseURI)"
+  "function boatConfigs(uint8 boatType) view returns (string memory name, uint256 dailyXp, uint256 priceEth, uint256 priceUsdc, uint256 maxSupply, uint256 currentSupply, string memory baseURI)"
 ];
 
 const GAME_CONTROLLER_ABI = [
@@ -27,6 +27,7 @@ const GAME_CONTROLLER_ABI = [
   "function getPlayerInfo(address player) view returns (uint256 totalXp, uint256 currentStreak, uint256 longestStreak, uint256 lastClaimDate, uint256 mapX, uint256 mapY, bool hasPosition, bool canClaim)"
 ];
 
+const GAME_CONTROLLER_INTERFACE = new ethers.Interface(GAME_CONTROLLER_ABI);
 const BOAT_TYPE_NAMES = ['DINGHY', 'SAILBOAT', 'YACHT', 'TRAWLER', 'MEGASHIP'];
 
 function isConfiguredAddress(address) {
@@ -40,6 +41,12 @@ function isConfiguredAddress(address) {
   } catch {
     return false;
   }
+}
+
+function makeStatusError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
 class BlockchainService {
@@ -224,6 +231,67 @@ class BlockchainService {
       logger.error('Failed to get player info:', error);
       throw error;
     }
+  }
+
+  async verifyGameControllerAction(txHash, expectedFrom, methodName, expectedArgs = []) {
+    if (!this.contracts.gameController || !isConfiguredAddress(config.blockchain.contracts.gameController)) {
+      throw makeStatusError('Game Controller contract is not configured', 503);
+    }
+
+    if (!txHash || typeof txHash !== 'string') {
+      throw makeStatusError('Transaction hash is required');
+    }
+
+    const [receipt, tx] = await Promise.all([
+      this.provider.getTransactionReceipt(txHash),
+      this.provider.getTransaction(txHash),
+    ]);
+
+    if (!receipt || !tx) {
+      throw makeStatusError('Transaction was not found or is not mined yet');
+    }
+
+    if (receipt.status !== 1) {
+      throw makeStatusError('Transaction failed onchain');
+    }
+
+    const expectedController = ethers.getAddress(config.blockchain.contracts.gameController);
+    const actualTo = tx.to ? ethers.getAddress(tx.to) : null;
+    if (actualTo !== expectedController) {
+      throw makeStatusError('Transaction does not target the Game Controller');
+    }
+
+    const actualFrom = ethers.getAddress(tx.from);
+    const normalizedExpectedFrom = ethers.getAddress(expectedFrom);
+    if (actualFrom !== normalizedExpectedFrom) {
+      throw makeStatusError('Transaction sender does not match authenticated wallet', 403);
+    }
+
+    let parsed;
+    try {
+      parsed = GAME_CONTROLLER_INTERFACE.parseTransaction({ data: tx.data, value: tx.value });
+    } catch {
+      throw makeStatusError('Transaction data is not a supported Game Controller call');
+    }
+
+    if (!parsed || parsed.name !== methodName) {
+      throw makeStatusError(`Expected ${methodName} transaction`);
+    }
+
+    expectedArgs.forEach((expected, index) => {
+      const actual = parsed.args[index];
+      if (BigInt(actual) !== BigInt(expected)) {
+        throw makeStatusError(`Transaction argument ${index} does not match request`);
+      }
+    });
+
+    return {
+      hash: receipt.hash,
+      blockNumber: receipt.blockNumber,
+      method: parsed.name,
+      from: actualFrom.toLowerCase(),
+      to: expectedController.toLowerCase(),
+    };
   }
 
   async mintStarterBoat(address) {

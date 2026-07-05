@@ -132,6 +132,27 @@ function signSession(userRef, data) {
   );
 }
 
+function getExpectedSignInScope() {
+  const appUrl = new URL(config.app.url);
+  return {
+    domain: appUrl.host,
+    uri: appUrl.origin,
+  };
+}
+
+function normalizeSignInUri(value) {
+  return new URL(value).origin;
+}
+
+function isExpectedSignInScope({ domain, uri }) {
+  try {
+    const expected = getExpectedSignInScope();
+    return domain === expected.domain && normalizeSignInUri(uri) === expected.uri;
+  } catch {
+    return false;
+  }
+}
+
 function buildWalletChallengeMessage({
   walletAddress,
   nonce,
@@ -176,10 +197,15 @@ router.post(
       const nonce = randomBytes(16).toString('hex');
       const issuedAt = new Date().toISOString();
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-      const appUrl = new URL(config.app.url);
-      const domain = req.body.domain || appUrl.host;
-      const uri = req.body.uri || config.app.url;
+      const expectedScope = getExpectedSignInScope();
+      const domain = req.body.domain || expectedScope.domain;
+      const uri = req.body.uri ? normalizeSignInUri(req.body.uri) : expectedScope.uri;
       const chainId = Number(req.body.chainId || config.blockchain.chainId);
+
+      if (!isExpectedSignInScope({ domain, uri })) {
+        return res.status(400).json({ error: 'Invalid wallet sign-in scope' });
+      }
+
       const message = buildWalletChallengeMessage({
         walletAddress,
         nonce,
@@ -241,6 +267,7 @@ router.post(
         challenge.used ||
         challenge.walletAddress !== walletAddress ||
         challenge.message !== message ||
+        !isExpectedSignInScope({ domain: challenge.domain, uri: challenge.uri }) ||
         Date.now() > new Date(challenge.expiresAt).getTime()
       ) {
         return res.status(401).json({ error: 'Expired or invalid wallet challenge' });
@@ -436,7 +463,7 @@ router.post('/refresh', async (req, res) => {
       return res.status(401).json({ error: 'Token required' });
     }
 
-    const decoded = jwt.verify(token, config.jwt.secret, { ignoreExpiration: true });
+    const decoded = jwt.verify(token, config.jwt.secret);
     const db = getFirestore();
     const userSnap = await db.collection('users').doc(decoded.userId).get();
 

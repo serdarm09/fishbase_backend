@@ -109,6 +109,20 @@ async function verifyActiveBoatOwnership(activeBoat, walletAddress) {
   }
 }
 
+async function verifyGameControllerAction({ txHash, walletAddress, methodName, expectedArgs = [] }) {
+  return blockchainService.verifyGameControllerAction(
+    txHash,
+    walletAddress,
+    methodName,
+    expectedArgs
+  );
+}
+
+function sendBlockchainError(res, error, fallbackMessage) {
+  const status = error.statusCode || 500;
+  res.status(status).json({ error: error.message || fallbackMessage });
+}
+
 router.get('/profile', async (req, res) => {
   try {
     const db = getFirestore();
@@ -248,15 +262,40 @@ router.patch(
   }
 );
 
-router.post('/claim-daily', claimLimiter, async (req, res) => {
+router.post(
+  '/claim-daily',
+  claimLimiter,
+  [
+    body('claimTxHash').isString().isLength({ min: 10, max: 100 }).withMessage('Valid claim transaction hash is required'),
+  ],
+  async (req, res) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Invalid claim payload', details: errors.array() });
+    }
+
     const db = getFirestore();
     const userRef = db.collection('users').doc(req.user.id);
     const boostInfo = await getBoostInfo(req.user.walletAddress);
     const nowIso = new Date().toISOString();
+    const onchainAction = await verifyGameControllerAction({
+      txHash: req.body.claimTxHash,
+      walletAddress: req.user.walletAddress,
+      methodName: 'claimDaily',
+    });
+    const actionRef = db.collection('onchainActions').doc(onchainAction.hash);
 
     const result = await db.runTransaction(async (tx) => {
-      const snapshot = await tx.get(userRef);
+      const [snapshot, actionSnap] = await Promise.all([
+        tx.get(userRef),
+        tx.get(actionRef),
+      ]);
+
+      if (actionSnap.exists) {
+        return { error: 'Transaction has already been used' };
+      }
+
       if (!snapshot.exists) {
         throw new Error('User not found');
       }
@@ -328,6 +367,14 @@ router.post('/claim-daily', claimLimiter, async (req, res) => {
       };
 
       tx.update(userRef, updatedData);
+      tx.create(actionRef, {
+        userId: req.user.id,
+        walletAddress: req.user.walletAddress,
+        method: onchainAction.method,
+        txHash: onchainAction.hash,
+        blockNumber: onchainAction.blockNumber,
+        createdAt: nowIso,
+      });
 
       return {
         xpEarned: finalXp,
@@ -354,7 +401,7 @@ router.post('/claim-daily', claimLimiter, async (req, res) => {
     });
   } catch (error) {
     logger.error('Daily claim error:', error);
-    res.status(500).json({ error: 'Failed to claim daily reward' });
+    sendBlockchainError(res, error, 'Failed to claim daily reward');
   }
 });
 
@@ -366,7 +413,7 @@ router.post(
     body('y').isInt({ min: 0, max: config.game.gridSize - 1 }).withMessage('Y must be between 0-99'),
     body('lat').optional().isFloat({ min: -90, max: 90 }).withMessage('Invalid latitude'),
     body('lng').optional().isFloat({ min: -180, max: 180 }).withMessage('Invalid longitude'),
-    body('placementTxHash').optional().isString().isLength({ min: 10, max: 100 }).withMessage('Invalid placement tx hash'),
+    body('placementTxHash').isString().isLength({ min: 10, max: 100 }).withMessage('Valid placement transaction hash is required'),
   ],
   async (req, res) => {
     try {
@@ -376,19 +423,37 @@ router.post(
       }
 
       const db = getFirestore();
-      const { x, y, lat, lng, placementTxHash } = req.body;
+      const x = Number(req.body.x);
+      const y = Number(req.body.y);
+      const { lat, lng, placementTxHash } = req.body;
       const hasRealMapPoint = typeof lat === 'number' && typeof lng === 'number';
       if (!hasRealMapPoint && !isSeaCoordinate(x, y, config.game.gridSize)) {
         return res.status(400).json({ error: 'Boats can only be placed on open sea' });
       }
 
+      const onchainAction = await verifyGameControllerAction({
+        txHash: placementTxHash,
+        walletAddress: req.user.walletAddress,
+        methodName: 'placeBoat',
+        expectedArgs: [x, y],
+      });
+
       const cellId = `${x}_${y}`;
       const cellRef = db.collection('mapPlacements').doc(cellId);
       const userRef = db.collection('users').doc(req.user.id);
+      const actionRef = db.collection('onchainActions').doc(onchainAction.hash);
       const nowIso = new Date().toISOString();
 
       const result = await db.runTransaction(async (tx) => {
-        const [userSnap, cellSnap] = await Promise.all([tx.get(userRef), tx.get(cellRef)]);
+        const [userSnap, cellSnap, actionSnap] = await Promise.all([
+          tx.get(userRef),
+          tx.get(cellRef),
+          tx.get(actionRef),
+        ]);
+
+        if (actionSnap.exists) {
+          return { error: 'Transaction has already been used' };
+        }
 
         if (!userSnap.exists) {
           throw new Error('User not found');
@@ -459,6 +524,15 @@ router.post(
           mapPosition: { x, y, lat: hasRealMapPoint ? lat : null, lng: hasRealMapPoint ? lng : null, lastMoved: nowIso },
           updatedAt: nowIso,
         });
+        tx.create(actionRef, {
+          userId: req.user.id,
+          walletAddress: req.user.walletAddress,
+          method: onchainAction.method,
+          txHash: onchainAction.hash,
+          blockNumber: onchainAction.blockNumber,
+          args: { x, y },
+          createdAt: nowIso,
+        });
 
         return {
           x,
@@ -478,7 +552,7 @@ router.post(
       res.json({ success: true, placement: result });
     } catch (error) {
       logger.error('Place boat error:', error);
-      res.status(500).json({ error: 'Failed to place boat' });
+      sendBlockchainError(res, error, 'Failed to place boat');
     }
   }
 );
@@ -491,7 +565,7 @@ router.post(
     body('y').isInt({ min: 0, max: config.game.gridSize - 1 }).withMessage('Y must be between 0-99'),
     body('lat').optional().isFloat({ min: -90, max: 90 }).withMessage('Invalid latitude'),
     body('lng').optional().isFloat({ min: -180, max: 180 }).withMessage('Invalid longitude'),
-    body('placementTxHash').optional().isString().isLength({ min: 10, max: 100 }).withMessage('Invalid placement tx hash'),
+    body('placementTxHash').isString().isLength({ min: 10, max: 100 }).withMessage('Valid movement transaction hash is required'),
   ],
   async (req, res) => {
     try {
@@ -501,19 +575,37 @@ router.post(
       }
 
       const db = getFirestore();
-      const { x, y, lat, lng, placementTxHash } = req.body;
+      const x = Number(req.body.x);
+      const y = Number(req.body.y);
+      const { lat, lng, placementTxHash } = req.body;
       const hasRealMapPoint = typeof lat === 'number' && typeof lng === 'number';
       if (!hasRealMapPoint && !isSeaCoordinate(x, y, config.game.gridSize)) {
         return res.status(400).json({ error: 'Boats can only be moved to open sea' });
       }
 
+      const onchainAction = await verifyGameControllerAction({
+        txHash: placementTxHash,
+        walletAddress: req.user.walletAddress,
+        methodName: 'moveBoat',
+        expectedArgs: [x, y],
+      });
+
       const newCellId = `${x}_${y}`;
       const newCellRef = db.collection('mapPlacements').doc(newCellId);
       const userRef = db.collection('users').doc(req.user.id);
+      const actionRef = db.collection('onchainActions').doc(onchainAction.hash);
       const nowIso = new Date().toISOString();
 
       const result = await db.runTransaction(async (tx) => {
-        const [userSnap, newCellSnap] = await Promise.all([tx.get(userRef), tx.get(newCellRef)]);
+        const [userSnap, newCellSnap, actionSnap] = await Promise.all([
+          tx.get(userRef),
+          tx.get(newCellRef),
+          tx.get(actionRef),
+        ]);
+
+        if (actionSnap.exists) {
+          return { error: 'Transaction has already been used' };
+        }
 
         if (!userSnap.exists) {
           throw new Error('User not found');
@@ -581,6 +673,15 @@ router.post(
           mapPosition: { x, y, lat: hasRealMapPoint ? lat : null, lng: hasRealMapPoint ? lng : null, lastMoved: nowIso },
           updatedAt: nowIso,
         });
+        tx.create(actionRef, {
+          userId: req.user.id,
+          walletAddress: req.user.walletAddress,
+          method: onchainAction.method,
+          txHash: onchainAction.hash,
+          blockNumber: onchainAction.blockNumber,
+          args: { x, y },
+          createdAt: nowIso,
+        });
 
         return {
           from: { x: activeBoat.mapX, y: activeBoat.mapY },
@@ -597,7 +698,7 @@ router.post(
       res.json({ success: true, movement: result });
     } catch (error) {
       logger.error('Move boat error:', error);
-      res.status(500).json({ error: 'Failed to move boat' });
+      sendBlockchainError(res, error, 'Failed to move boat');
     }
   }
 );
