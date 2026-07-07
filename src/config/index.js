@@ -68,7 +68,7 @@ const config = {
   // Game Settings
   game: {
     gridSize: 100,
-    placementFee: '0.001', // ETH
+    placementFee: '0', // ETH; users only pay Base network gas by default
     stagnantXpMultiplier: 0.1, // 10% reward if boat not moved in 24h
     movementBonusDays: 3,
     movementBonusMultiplier: 2.0, // 100% bonus

@@ -265,36 +265,15 @@ router.patch(
 router.post(
   '/claim-daily',
   claimLimiter,
-  [
-    body('claimTxHash').isString().isLength({ min: 10, max: 100 }).withMessage('Valid claim transaction hash is required'),
-  ],
   async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ error: 'Invalid claim payload', details: errors.array() });
-    }
-
     const db = getFirestore();
     const userRef = db.collection('users').doc(req.user.id);
     const boostInfo = await getBoostInfo(req.user.walletAddress);
     const nowIso = new Date().toISOString();
-    const onchainAction = await verifyGameControllerAction({
-      txHash: req.body.claimTxHash,
-      walletAddress: req.user.walletAddress,
-      methodName: 'claimDaily',
-    });
-    const actionRef = db.collection('onchainActions').doc(onchainAction.hash);
 
     const result = await db.runTransaction(async (tx) => {
-      const [snapshot, actionSnap] = await Promise.all([
-        tx.get(userRef),
-        tx.get(actionRef),
-      ]);
-
-      if (actionSnap.exists) {
-        return { error: 'Transaction has already been used' };
-      }
+      const snapshot = await tx.get(userRef);
 
       if (!snapshot.exists) {
         throw new Error('User not found');
@@ -367,14 +346,6 @@ router.post(
       };
 
       tx.update(userRef, updatedData);
-      tx.create(actionRef, {
-        userId: req.user.id,
-        walletAddress: req.user.walletAddress,
-        method: onchainAction.method,
-        txHash: onchainAction.hash,
-        blockNumber: onchainAction.blockNumber,
-        createdAt: nowIso,
-      });
 
       return {
         xpEarned: finalXp,

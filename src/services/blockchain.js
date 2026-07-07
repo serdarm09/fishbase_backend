@@ -29,6 +29,13 @@ const GAME_CONTROLLER_ABI = [
 
 const GAME_CONTROLLER_INTERFACE = new ethers.Interface(GAME_CONTROLLER_ABI);
 const BOAT_TYPE_NAMES = ['DINGHY', 'SAILBOAT', 'YACHT', 'TRAWLER', 'MEGASHIP'];
+const BASE_NETWORK = { name: 'base', chainId: 8453 };
+
+function createBaseProvider() {
+  return new ethers.JsonRpcProvider(config.blockchain.rpcUrl, BASE_NETWORK, {
+    staticNetwork: true,
+  });
+}
 
 function isConfiguredAddress(address) {
   if (!address || address === ethers.ZeroAddress) {
@@ -64,7 +71,7 @@ class BlockchainService {
 
     try {
       // Initialize provider
-      this.provider = new ethers.JsonRpcProvider(config.blockchain.rpcUrl);
+      this.provider = createBaseProvider();
       
       // Initialize signer if private key is provided
       if (config.blockchain.privateKey) {

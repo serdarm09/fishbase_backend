@@ -6,12 +6,16 @@ const BOOST_ABI = [
   'function balanceOf(address account, uint256 id) view returns (uint256)'
 ];
 
+const BASE_NETWORK = { name: 'base', chainId: 8453 };
+
 let provider;
 let contract;
 
 function ensureProvider() {
   if (!provider) {
-    provider = new ethers.JsonRpcProvider(config.blockchain.rpcUrl);
+    provider = new ethers.JsonRpcProvider(config.blockchain.rpcUrl, BASE_NETWORK, {
+      staticNetwork: true,
+    });
   }
   return provider;
 }
