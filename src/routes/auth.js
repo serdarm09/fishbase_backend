@@ -133,12 +133,47 @@ function signSession(userRef, data) {
   );
 }
 
-function getExpectedSignInScope() {
-  const appUrl = new URL(config.app.url);
-  return {
-    domain: appUrl.host,
-    uri: appUrl.origin,
-  };
+function getConfiguredSignInScopes() {
+  const configuredUrls = [config.app.url, config.frontendUrl]
+    .filter(Boolean)
+    .flatMap((value) =>
+      String(value)
+        .split(',')
+        .map((url) => url.trim())
+        .filter(Boolean)
+    );
+
+  const scopes = [];
+  const seen = new Set();
+
+  for (const configuredUrl of configuredUrls) {
+    try {
+      const appUrl = new URL(configuredUrl);
+      const scope = {
+        domain: appUrl.host,
+        uri: appUrl.origin,
+      };
+      const key = `${scope.domain}|${scope.uri}`;
+
+      if (!seen.has(key)) {
+        scopes.push(scope);
+        seen.add(key);
+      }
+    } catch (error) {
+      logger.warn('Ignoring invalid configured sign-in URL', { configuredUrl });
+    }
+  }
+
+  if (!scopes.length) {
+    const fallbackUrl = new URL('http://localhost:3000');
+    return [{ domain: fallbackUrl.host, uri: fallbackUrl.origin }];
+  }
+
+  return scopes;
+}
+
+function getDefaultSignInScope() {
+  return getConfiguredSignInScopes()[0];
 }
 
 function normalizeSignInUri(value) {
@@ -147,8 +182,10 @@ function normalizeSignInUri(value) {
 
 function isExpectedSignInScope({ domain, uri }) {
   try {
-    const expected = getExpectedSignInScope();
-    return domain === expected.domain && normalizeSignInUri(uri) === expected.uri;
+    const normalizedUri = normalizeSignInUri(uri);
+    return getConfiguredSignInScopes().some(
+      (expected) => domain === expected.domain && normalizedUri === expected.uri
+    );
   } catch {
     return false;
   }
@@ -198,7 +235,7 @@ router.post(
       const nonce = randomBytes(16).toString('hex');
       const issuedAt = new Date().toISOString();
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-      const expectedScope = getExpectedSignInScope();
+      const expectedScope = getDefaultSignInScope();
       const domain = req.body.domain || expectedScope.domain;
       const uri = req.body.uri ? normalizeSignInUri(req.body.uri) : expectedScope.uri;
       const chainId = Number(req.body.chainId || config.blockchain.chainId);
