@@ -19,11 +19,48 @@ const config = require('./config');
 
 const app = express();
 const server = createServer(app);
-const allowedOrigin = config.frontendUrl;
+const allowedOrigins = Array.from(
+  new Set(
+    [config.frontendUrl, config.app.url]
+      .filter(Boolean)
+      .flatMap((value) =>
+        String(value)
+          .split(',')
+          .map((origin) => origin.trim())
+          .filter(Boolean)
+      )
+      .flatMap((origin) => {
+        try {
+          const url = new URL(origin);
+          if (url.hostname === 'localhost') {
+            url.hostname = '127.0.0.1';
+            return [origin, url.toString().replace(/\/$/, '')];
+          }
+          if (url.hostname === '127.0.0.1') {
+            url.hostname = 'localhost';
+            return [origin, url.toString().replace(/\/$/, '')];
+          }
+        } catch (_error) {
+          return [origin];
+        }
+
+        return [origin];
+      })
+  )
+);
+
+function corsOrigin(origin, callback) {
+  if (!origin || allowedOrigins.includes(origin)) {
+    callback(null, true);
+    return;
+  }
+
+  callback(new Error(`CORS origin not allowed: ${origin}`));
+}
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigin,
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
   },
 });
@@ -31,7 +68,7 @@ const io = new Server(server, {
 app.use(helmet());
 app.use(
   cors({
-    origin: allowedOrigin,
+    origin: corsOrigin,
     credentials: true,
   })
 );
@@ -41,7 +78,7 @@ const limiter = rateLimit({
   max: config.rateLimits.default.max,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS',
+  skip: (req) => !config.rateLimits.enabled || req.method === 'OPTIONS',
   message: { error: 'Too many requests from this IP' },
 });
 app.use(limiter);
@@ -78,6 +115,7 @@ async function startServer() {
     server.listen(config.port, () => {
       console.log(`FishBase backend running on port ${config.port}`);
       console.log(`Environment: ${config.nodeEnv}`);
+      console.log(`Allowed origins: ${allowedOrigins.join(', ')}`);
     });
   } catch (error) {
     console.error('Failed to start server:', error);

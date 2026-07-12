@@ -23,6 +23,7 @@ const router = express.Router();
 const claimLimiter = rateLimit({
   windowMs: config.rateLimits.claimDaily.windowMs,
   max: config.rateLimits.claimDaily.max,
+  skip: () => !config.rateLimits.enabled,
   message: { error: 'Daily claim already used' },
   keyGenerator: (req) => `claim:${req.user?.id}`,
 });
@@ -30,11 +31,28 @@ const claimLimiter = rateLimit({
 const placementLimiter = rateLimit({
   windowMs: config.rateLimits.placeBoat.windowMs,
   max: config.rateLimits.placeBoat.max,
+  skip: () => !config.rateLimits.enabled,
   message: { error: 'Too many boat placements' },
 });
 
+function normalizeReferralCode(code) {
+  return String(code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function buildReferralCode(userId) {
+  return `FB${String(userId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toUpperCase()}`;
+}
+
+function hasReferralEligibility(data) {
+  return Boolean(
+    data?.activeBoat?.verifiedAt ||
+    (Array.isArray(data?.boats) && data.boats.some((boat) => boat?.verifiedAt))
+  );
+}
+
 function buildProfilePayload(id, data) {
   const totalXp = data.totalXp || 0;
+  const referralStats = data.referralStats || {};
   return {
     id,
     username: data.username,
@@ -54,6 +72,16 @@ function buildProfilePayload(id, data) {
     miniGame: data.miniGame || {},
     boost: data.boost || { level: 'NONE', multiplier: 0 },
     lastClaimDate: data.lastClaimDate || null,
+    referral: {
+      code: data.referralCode || null,
+      referredBy: data.referredBy || null,
+      referredByCode: data.referredByCode || null,
+      appliedAt: data.referralAppliedAt || null,
+      count: referralStats.count || 0,
+      xpEarned: referralStats.xpEarned || 0,
+      rewardXp: config.game.referralXp,
+      eligibleToApply: hasReferralEligibility(data) && !data.referredBy,
+    },
   };
 }
 
@@ -64,6 +92,52 @@ async function getUserDocument(db, userId) {
     return null;
   }
   return { ref: userRef, data: snapshot.data() };
+}
+
+async function ensureUserReferralCode(db, userRef, data) {
+  if (data.referralCode) {
+    return data;
+  }
+
+  const referralCode = buildReferralCode(userRef.id);
+  const codeRef = db.collection('referralCodes').doc(referralCode);
+
+  await db.runTransaction(async (tx) => {
+    const [userSnap, codeSnap] = await Promise.all([
+      tx.get(userRef),
+      tx.get(codeRef),
+    ]);
+
+    if (!userSnap.exists) {
+      throw new Error('User not found');
+    }
+
+    const currentData = userSnap.data();
+    if (currentData.referralCode) {
+      return;
+    }
+
+    if (codeSnap.exists && codeSnap.data()?.userId !== userRef.id) {
+      throw new Error('Referral code collision');
+    }
+
+    tx.set(codeRef, {
+      userId: userRef.id,
+      code: referralCode,
+      createdAt: new Date().toISOString(),
+    });
+    tx.update(userRef, {
+      referralCode,
+      referralStats: currentData.referralStats || { count: 0, xpEarned: 0 },
+      updatedAt: new Date().toISOString(),
+    });
+  });
+
+  return {
+    ...data,
+    referralCode,
+    referralStats: data.referralStats || { count: 0, xpEarned: 0 },
+  };
 }
 
 function normalizeUsername(username) {
@@ -131,13 +205,131 @@ router.get('/profile', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const payload = buildProfilePayload(userRecord.ref.id, userRecord.data);
+    const userData = await ensureUserReferralCode(db, userRecord.ref, userRecord.data);
+    const payload = buildProfilePayload(userRecord.ref.id, userData);
     res.json({ success: true, profile: payload });
   } catch (error) {
     logger.error('Get profile error:', error);
     res.status(500).json({ error: 'Failed to get profile' });
   }
 });
+
+router.post(
+  '/referral/apply',
+  [
+    body('code')
+      .isString()
+      .trim()
+      .isLength({ min: 4, max: 32 })
+      .withMessage('Referral code is required'),
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ error: 'Validation failed', details: errors.array() });
+      }
+
+      const code = normalizeReferralCode(req.body.code);
+      if (!/^[A-Z0-9]{4,32}$/.test(code)) {
+        return res.status(400).json({ error: 'Invalid referral code' });
+      }
+
+      const db = getFirestore();
+      const userRef = db.collection('users').doc(req.user.id);
+      const codeRef = db.collection('referralCodes').doc(code);
+      const referralRef = db.collection('referrals').doc(req.user.id);
+      const nowIso = new Date().toISOString();
+      const rewardXp = config.game.referralXp;
+
+      const result = await db.runTransaction(async (tx) => {
+        const [userSnap, codeSnap, referralSnap] = await Promise.all([
+          tx.get(userRef),
+          tx.get(codeRef),
+          tx.get(referralRef),
+        ]);
+
+        if (!userSnap.exists) {
+          return { error: 'User not found', status: 404 };
+        }
+
+        const userData = userSnap.data();
+        if (referralSnap.exists || userData.referredBy) {
+          return { error: 'Referral already applied', status: 409 };
+        }
+
+        if (!hasReferralEligibility(userData)) {
+          return { error: 'Mint or register a verified boat before using a referral code', status: 400 };
+        }
+
+        const ownCode = normalizeReferralCode(userData.referralCode || buildReferralCode(userRef.id));
+        if (code === ownCode) {
+          return { error: 'You cannot use your own referral code', status: 400 };
+        }
+
+        if (!codeSnap.exists) {
+          return { error: 'Referral code not found', status: 404 };
+        }
+
+        const referrerId = codeSnap.data()?.userId;
+        if (!referrerId || referrerId === req.user.id) {
+          return { error: 'You cannot use your own referral code', status: 400 };
+        }
+
+        const referrerRef = db.collection('users').doc(referrerId);
+        const referrerSnap = await tx.get(referrerRef);
+        if (!referrerSnap.exists) {
+          return { error: 'Referral owner not found', status: 404 };
+        }
+
+        const referrerData = referrerSnap.data();
+        const referralStats = referrerData.referralStats || {};
+        const nextReferralStats = {
+          count: (referralStats.count || 0) + 1,
+          xpEarned: (referralStats.xpEarned || 0) + rewardXp,
+        };
+
+        tx.create(referralRef, {
+          code,
+          referrerId,
+          referredUserId: req.user.id,
+          referredWalletAddress: req.user.walletAddress,
+          xpAwarded: rewardXp,
+          createdAt: nowIso,
+        });
+
+        tx.update(userRef, {
+          referredBy: referrerId,
+          referredByCode: code,
+          referralAppliedAt: nowIso,
+          updatedAt: nowIso,
+        });
+
+        tx.update(referrerRef, {
+          totalXp: (referrerData.totalXp || 0) + rewardXp,
+          totalFish: (referrerData.totalFish || 0) + rewardXp,
+          referralStats: nextReferralStats,
+          updatedAt: nowIso,
+        });
+
+        return {
+          referrerUsername: referrerData.username,
+          xpAwarded: rewardXp,
+          totalXp: (referrerData.totalXp || 0) + rewardXp,
+        };
+      });
+
+      if (result?.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      res.json({ success: true, referral: result });
+    } catch (error) {
+      logger.error('Apply referral error:', error);
+      res.status(500).json({ error: 'Failed to apply referral code' });
+    }
+  }
+);
 
 router.patch(
   '/profile',

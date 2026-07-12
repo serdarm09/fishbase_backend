@@ -16,6 +16,7 @@ const router = express.Router();
 const authLimiter = rateLimit({
   windowMs: config.rateLimits.auth.windowMs,
   max: config.rateLimits.auth.max,
+  skip: () => !config.rateLimits.enabled,
   message: { error: 'Too many authentication attempts' },
 });
 
