@@ -19,6 +19,8 @@ const config = require('./config');
 
 const app = express();
 const server = createServer(app);
+const isVercel = Boolean(process.env.VERCEL);
+let initPromise = null;
 const allowedOrigins = Array.from(
   new Set(
     [config.frontendUrl, config.app.url]
@@ -65,6 +67,21 @@ const io = new Server(server, {
   },
 });
 
+async function ensureInitialized() {
+  if (!initPromise) {
+    initPromise = (async () => {
+      getFirestore();
+      await initialize();
+
+      if (!isVercel) {
+        socketService.initialize(io);
+      }
+    })();
+  }
+
+  return initPromise;
+}
+
 app.use(helmet());
 app.use(
   cors({
@@ -91,15 +108,23 @@ app.get('/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     version: process.env.npm_package_version || '1.0.0',
+    runtime: isVercel ? 'vercel' : 'node',
   });
+});
+
+app.use(async (req, res, next) => {
+  try {
+    await ensureInitialized();
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.use('/api/auth', authRoutes);
 app.use('/api/game', authMiddleware, gameRoutes);
 app.use('/api/leaderboard', leaderboardRoutes);
 app.use('/api/nft', authMiddleware, nftRoutes);
-
-socketService.initialize(io);
 
 app.use(errorHandler);
 
@@ -109,8 +134,7 @@ app.use('*', (req, res) => {
 
 async function startServer() {
   try {
-    getFirestore();
-    await initialize();
+    await ensureInitialized();
 
     server.listen(config.port, () => {
       console.log(`FishBase backend running on port ${config.port}`);
@@ -123,11 +147,15 @@ async function startServer() {
   }
 }
 
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  server.close(() => {
-    console.log('Process terminated');
+if (!isVercel) {
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down gracefully');
+    server.close(() => {
+      console.log('Process terminated');
+    });
   });
-});
 
-startServer();
+  startServer();
+}
+
+module.exports = app;
