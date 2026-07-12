@@ -34,13 +34,23 @@ const allowedOrigins = Array.from(
       .flatMap((origin) => {
         try {
           const url = new URL(origin);
+          const variants = [origin, url.toString().replace(/\/$/, '')];
+
           if (url.hostname === 'localhost') {
             url.hostname = '127.0.0.1';
-            return [origin, url.toString().replace(/\/$/, '')];
+            return [...variants, url.toString().replace(/\/$/, '')];
           }
           if (url.hostname === '127.0.0.1') {
             url.hostname = 'localhost';
-            return [origin, url.toString().replace(/\/$/, '')];
+            return [...variants, url.toString().replace(/\/$/, '')];
+          }
+          if (url.hostname.startsWith('www.')) {
+            url.hostname = url.hostname.slice(4);
+            return [...variants, url.toString().replace(/\/$/, '')];
+          }
+          if (url.hostname === 'fishbase.fun') {
+            url.hostname = `www.${url.hostname}`;
+            return [...variants, url.toString().replace(/\/$/, '')];
           }
         } catch (_error) {
           return [origin];
